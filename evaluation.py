@@ -5,6 +5,9 @@ Implemented functions:
 - Chamfer distance
 - Hausdorf distance
 - Bijectivity
+- Coverage
+- Continuity
+- TODO: Dirichlet
 '''
 
 import numpy as np
