@@ -75,8 +75,6 @@ p2p_ICP = knn_query(meshlist[0].vertlist, meshlist[1].vertlist)
 
 print('Chamfer Distance ICP: '+str(chamfer_distance(meshlist[0].vertices[p2p_ICP],meshlist[0].vertices)))
 
-
-
 ###################################ZO######################################################
 
 # apply zoomout starting from the ICP initialization

@@ -29,6 +29,10 @@ from utils.visual_utils import *
 from utils.icp_utils import *
 from evaluation import *
 
+import sys
+sys.path.append('../Scalable_FM/')
+import large_mesh as lmu
+
 
 n_sub=2000
 
@@ -58,7 +62,7 @@ print('Chamfer Distance Knn: '+str(chamfer_distance(meshlist[0].vertices[p2p_KNN
 #subsample some points to perform rigid alignment faster
 subsample_list = np.zeros((2, n_sub), dtype=int)
 for i in tqdm(range(2)):
-    subsample_list[i] = meshlist[i].extract_fps(3000, geodesic=False, verbose=False)
+    subsample_list[i] = meshlist[i].extract_fps(n_sub, geodesic=False, verbose=False)
 
 fps1 = subsample_list[0]
 fps2 = subsample_list[1]
@@ -77,41 +81,6 @@ print('Chamfer Distance ICP: '+str(chamfer_distance(meshlist[0].vertices[p2p_ICP
 
 
 #################################FMAPS###########################################
-
-# compute landmarks: we select 10 random points of a shape and retrieve the corrispondent points using knn
-
-fps1 = meshlist[0].extract_fps(10, geodesic=False, verbose=False)
-fps2 = knn_query(meshlist[1].vertlist, meshlist[0].vertlist[fps1])
-landmarks=np.array([fps1,fps2]).T
-
-from pyFM.functional import FunctionalMapping
-
-process_params = {
-        'n_ev': (20,20),  # Number of eigenvalues on source and Target
-        'landmarks': landmarks,
-        'subsample_step': 1,  # In order not to use too many descriptors
-        'n_descr': 40, #number of descriptors
-        'descr_type': 'HKS',  # WKS or HKS
-    }
-model = FunctionalMapping(meshlist[0],meshlist[1])
-model.preprocess(**process_params,verbose=False)
-
-model.fit(w_descr= 1e-1, w_lap= 1e-3, w_dcomm= 1,w_orient= 0, verbose=False)
-fmap12=model.FM       #C{XY}, or A_{YX}^T
-
-plt.imshow(fmap12)
-#p2p=model.get_p2p(fmap12, model.mesh1.eigenvectors[:,:k],model.mesh2.eigenvectors[:,:k],adj, bijective)
-p2p_FM=model.get_p2p()
-
-print('Chamfer Distance FM: '+str(chamfer_distance(meshlist[0].vertices[p2p_FM],meshlist[0].vertices)))
-
-###################################SCALABLE ZO######################################################
-import sys
-sys.path.append('../Scalable_FM/')
-import large_mesh as lmu
-
-
-# Define parameters for the process
 process_params = {
     'dist_ratio': 3, # rho = dist_ratio * average_radius
     'self_limit': .25,  # Minimum value for self weight
@@ -134,6 +103,46 @@ U2, Ab2, Wb2, sub2, distmat2 = lmu.process_mesh(meshlist[1], n_samples, **proces
 evals2, evects2 = lmu.get_approx_spectrum(Wb2, Ab2, verbose=True)
 # apply zoomout starting from the  initialization
 # Compute an initial approximate functional map
+
+# compute landmarks: we select 10 random points of a shape and retrieve the corrispondent points using knn
+
+#compute initial Fmaps
+from pyFM.functional import FunctionalMapping
+#landmarks
+fps1_or = meshlist[0].extract_fps(10, geodesic=False, verbose=False)
+fps1 =  knn_query(meshlist[0].vertices[sub1], meshlist[0].vertlist[fps1_or])
+
+fps2 = knn_query(meshlist[1].vertices[sub2], meshlist[0].vertlist[sub1][fps1])
+landmarks=np.array([fps1,fps2]).T
+
+mesh1=TriMesh(meshlist[0].vertices[sub1])
+mesh2=TriMesh(meshlist[1].vertices[sub2])
+mesh1.eigenvalues, mesh1.eigenvectors=evals1, evects1
+mesh2.eigenvalues, mesh2.eigenvectors=evals2, evects2
+mesh1.A=Ab1
+mesh2.A=Ab2
+mesh1.W=Wb1
+mesh2.W=Wb2
+
+process_params = {
+        'n_ev': (20,20),  # Number of eigenvalues on source and Target
+        'landmarks': landmarks,
+        'subsample_step': 1,  # In order not to use too many descriptors
+        'n_descr': 40, #number of descriptors
+        'descr_type': 'HKS',  # WKS or HKS
+    }
+model = FunctionalMapping(mesh1,mesh2)
+model.preprocess(**process_params,verbose=False)
+
+model.fit(w_descr= 1e-1, w_lap= 1e-3, w_dcomm= 1,w_orient= 0, verbose=False)
+fmap12=model.FM       #C{XY}, or A_{YX}^T
+
+plt.imshow(fmap12)
+p2p_FM=model.get_p2p()
+
+print('Chamfer Distance FM: '+str(chamfer_distance(meshlist[0].vertices[p2p_FM],meshlist[0].vertices)))
+
+###################################SCALABLE ZO######################################################
 
 # You can perform ZoomOut like if you had resampled the whole mesh. This gives you a funcitonal map and a point-to-point map between the two samples (not the whole meshes)
 FM_12_zo, p2p_ZO = pyFM.refine.zoomout.zoomout_refine(fmap12, evects1, evects2, nit=16, step=5, A2=Ab2, return_p2p=True, n_jobs=10, verbose=True)

@@ -58,7 +58,7 @@ print('Chamfer Distance Knn: '+str(chamfer_distance(meshlist[0].vertices[p2p_KNN
 #subsample some points to perform rigid alignment faster
 subsample_list = np.zeros((2, n_sub), dtype=int)
 for i in tqdm(range(2)):
-    subsample_list[i] = meshlist[i].extract_fps(3000, geodesic=False, verbose=False)
+    subsample_list[i] = meshlist[i].extract_fps(n_sub, geodesic=False, verbose=False)
 
 fps1 = subsample_list[0]
 fps2 = subsample_list[1]
