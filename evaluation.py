@@ -147,6 +147,27 @@ def bijectivity(x,p21, p12):
 
     return bij
 
+#dirichlet loss
+def dirichlet_energy(L, f):
+    """
+    Calculate the Dirichlet energy for a given function on a 3D mesh.
+
+    Parameters:
+    L (scipy.sparse.csr_matrix): The Laplacian matrix of the mesh.
+    f (np.ndarray): A vector containing the function values at each vertex.
+
+    Returns:
+    float: The Dirichlet energy.
+    """
+    # Ensure L is in sparse format
+    if not isinstance(L, csr_matrix):
+        L = csr_matrix(L)
+
+    # Compute the Dirichlet energy
+    energy = f.T @ L @ f
+    
+    return energy
+
 
 #from pyFM continuity and coverage
 
