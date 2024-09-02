@@ -1,0 +1,185 @@
+# code to perform ICP+Rematching+FunctionalMaps
+
+
+# import libraries
+
+import numpy as np
+from pyFM.mesh import TriMesh
+import os
+import matplotlib.pyplot as plt
+
+from tqdm import tqdm as tqdm
+import pyFM.spectral as spectral
+from pyFM.FMN import FMN
+import pyFM
+import sys
+
+import pyFM.spectral as spectral
+from pyFM.spectral.nn_utils import knn_query
+from pyFM.refine.zoomout import zoomout_refine
+
+import trimesh
+from sklearn.neighbors import KDTree, NearestNeighbors
+import scipy.spatial
+from scipy.io import savemat
+from tqdm.auto import tqdm
+from os.path import join
+import igl
+from PyRMT import RMTMesh
+from pyFM.functional import FunctionalMapping
+import time
+
+sys.path.append(r'D:\Make_Galileo_great_again\utils')
+from visual_utils import *
+from icp_utils import * 
+
+############################### LOAD MESHES with RMTMesh (Rematching objects) ####################################
+SamplesDir = r"D:\Make_Galileo_great_again\data\giorgio_"
+
+N_meshes = 11
+m_list= []
+m_rem_list= []
+bm_list= []
+
+#meshes in Trimesh
+meshlist= []
+rem_list_tri = []
+start= time.time()
+
+for i in range(N_meshes):
+    PATH = os.path.join(SamplesDir, fr"0000{i:02d}_tumoredbrain.off")
+    if not os.path.exists(PATH):
+        v, f = igl.read_triangle_mesh(os.path.join(SamplesDir, fr"0000{i:02d}_tumoredbrain\0000{i:02d}_tumoredbrain.off"))
+        v = np.asfortranarray(v)
+        f = np.asfortranarray(f)
+
+        m = RMTMesh(v, f)
+        m.make_manifold()
+        m_list.append(m)
+        meshlist.append(TriMesh(m_list[i].vertices, m_list[i].triangles))
+
+        m_rem = m.remesh(6000)
+        m_rem.clean_up()
+        m_rem_list.append(m_rem)
+        rem_list_tri.append(TriMesh(m_rem_list[i].vertices, m_rem_list[i].triangles))
+
+        bm = m_rem.baryc_map(v)
+        bm_list.append(bm)
+
+        igl.write_triangle_mesh(os.path.join(SamplesDir, fr"0000{i:02d}_tumoredbrain.off"), m_rem.vertices, m_rem.triangles)
+        savemat(os.path.join(SamplesDir, fr"bm{i:02d}.mat"), {"U" : bm})
+end = time.time()
+print("Necessary time to Import Data + Remesh: ", end-start, "Seconds")
+
+############################### IMPORT THE TEMPLATE ######################################
+
+target_hr = TriMesh(r'D:\Make_Galileo_great_again\data\giorgio_\MNI.off')
+meshlist.append(target_hr)
+target_re = TriMesh(r'D:\Make_Galileo_great_again\data\giorgio_\MNI_remesh.off')
+rem_list_tri.append(target_re)
+
+SRC=11
+
+
+################################# NEAREST NEIGHBOUR #######################################
+for i in range(N_meshes):
+    print(" \nThe target mesh now is:", i)
+    TRG=i
+    start= time.time()
+
+    p2p_KNN = knn_query(meshlist[SRC].vertlist, meshlist[TRG].vertlist)
+
+    end = time.time()
+    print("Necessary time to KNN: ", end-start, "Seconds")
+
+    #print('Chamfer Distance Knn: '+str(chamfer_distance(meshlist[0].vertices[p2p_KNN],meshlist[0].vertices)))
+
+
+    ################################# ICP #####################################################
+    #subsample some points to perform rigid alignment faster
+    start= time.time()
+
+    subsample_list = np.zeros((N_meshes+1, 10), dtype=int)
+    for i in tqdm(range(N_meshes+1)):
+        subsample_list[i] = meshlist[i].extract_fps(10, geodesic=False, verbose=False)
+    fps1 = subsample_list[SRC]
+    fps2 = subsample_list[TRG]
+
+    # Get initial correspondences with KNN
+    p2p_21_init_sub = knn_query_normals(meshlist[SRC].vertlist[fps1], meshlist[TRG].vertlist[fps2],
+                                                meshlist[SRC].vertex_normals[fps1], meshlist[TRG].vertex_normals[fps2],
+                                                k_base=5, n_jobs=20, verbose=False)
+    # ICP Align the shape
+    _, R, t = icp_align(meshlist[TRG].vertlist[fps2], meshlist[SRC].vertlist[fps1],
+                                p2p_12=p2p_21_init_sub,
+                                return_params=True, n_jobs=20, epsilon=1e-4, verbose=False)
+
+    meshlist[TRG].rotate(R)
+    meshlist[TRG].translate(t)
+
+    p2p_ICP = knn_query(meshlist[SRC].vertlist, meshlist[TRG].vertlist)
+
+    end = time.time()
+    print("Necessary time to ICP: ", end-start, "Seconds")
+    #print('Chamfer Distance ICP: '+str(chamfer_distance(meshlist[0].vertices[p2p_ICP],meshlist[0].vertices)))
+
+
+    ################################# REMATCHING + FUNCTIONAL MAPS ###########################################
+    start= time.time()
+
+    subsample_list = np.zeros((N_meshes+1, 10), dtype=int)
+    for i in tqdm(range(N_meshes+1)):
+        subsample_list[i] = rem_list_tri[i].extract_fps(10, geodesic=False, verbose=False)
+
+    fps2 = knn_query(rem_list_tri[TRG].vertlist, rem_list_tri[SRC].vertlist[subsample_list[SRC]])
+
+    landmarks=np.array([subsample_list[SRC],fps2]).T
+
+    process_params = {
+            'n_ev': (20,20),  # Number of eigenvalues on source and Target
+            'landmarks': landmarks,
+            'subsample_step': 1,  # In order not to use too many descriptors
+            'n_descr': 40, #number of descriptors
+            'descr_type': 'HKS',  # WKS or HKS
+        }
+    model = FunctionalMapping(rem_list_tri[SRC],rem_list_tri[TRG])
+    model.preprocess(**process_params,verbose=False)
+
+    model.fit(w_descr= 1e-1, w_lap= 1e-3, w_dcomm= 1,w_orient= 0, verbose=False)
+    fmap12=model.FM       #C{XY}, or A_{YX}^T
+
+    #p2p=model.get_p2p(fmap12, model.mesh1.eigenvectors[:,:k],model.mesh2.eigenvectors[:,:k],adj, bijective)
+    p2p=model.get_p2p()
+
+    plt.imshow(fmap12)
+
+    end = time.time()
+    print("Necessary time to FunMaps: ", end-start, "Seconds")
+
+    ############################### FUNCTION TO PLOT #################################
+
+    #plot_mesh(rem_list_tri[SRC],color=np.mean(rem_list_tri[SRC].vertices,axis=1))
+    #plot_mesh(rem_list_tri[TRG],color=np.mean(rem_list_tri[SRC].vertices,axis=1)[p2p])
+
+    ############################### ZoomOut ##########################################
+
+    #zoomout
+    from pyFM.refine.zoomout import mesh_zoomout_refine_p2p
+
+    start= time.time()
+
+    rem_list_tri[SRC].process(k=150,intrinsic=True)
+    rem_list_tri[TRG].process(k=150,intrinsic=True)
+
+    FM_12_hks_zo, p2p_21_hks_zo = mesh_zoomout_refine_p2p(p2p_21=p2p, mesh1=rem_list_tri[SRC], mesh2=rem_list_tri[TRG], k_init=20, nit=16, step=5, return_p2p=True, n_jobs=10, verbose=True)
+    plt.imshow(FM_12_hks_zo)
+
+    ############################### Back To High Resolution ###########################
+
+    p2p_ZO_RM = spectral.FM_to_p2p(FM_12_hks_zo, bm_list[SRC] @ rem_list_tri[SRC].eigenvectors, bm_list[TRG] @ rem_list_tri[TRG].eigenvectors, n_jobs=10)
+
+
+    end = time.time()
+    print("Necessary time to ZoomOut + KNN High Res: ", end-start, "Seconds \n")
+
+print("The End,\n  Thank you for your Attention ;D ")
