@@ -33,6 +33,8 @@ import time
 sys.path.append(r'D:\Make_Galileo_great_again\utils')
 from visual_utils import *
 from icp_utils import * 
+sys.path.append(r'D:\Make_Galileo_great_again')
+from evaluation import *
 
 ############################### LOAD MESHES with RMTMesh (Rematching objects) ####################################
 SamplesDir = r"D:\Make_Galileo_great_again\data\giorgio_"
@@ -56,8 +58,8 @@ for i in range(N_meshes):
 
     if os.path.exists(PATH):
 
-        rem_list_tri.append(TriMesh(PATH))
-        meshlist.append(TriMesh(PATH_hr))
+        rem_list_tri.append(TriMesh(PATH, area_normalize=True, center= True))
+        meshlist.append(TriMesh(PATH_hr, area_normalize=True, center= True))
         D = loadmat(PATH_bm)["U"]
         bm_list.append(D)
         
@@ -70,12 +72,12 @@ for i in range(N_meshes):
         m = RMTMesh(v, f)
         m.make_manifold()
         m_list.append(m)
-        meshlist.append(TriMesh(m_list[i].vertices, m_list[i].triangles))
+        meshlist.append(TriMesh(m_list[i].vertices, m_list[i].triangles, area_normalize=True, center= True))
 
         m_rem = m.remesh(6000)
         m_rem.clean_up()
         m_rem_list.append(m_rem)
-        rem_list_tri.append(TriMesh(m_rem_list[i].vertices, m_rem_list[i].triangles))
+        rem_list_tri.append(TriMesh(m_rem_list[i].vertices, m_rem_list[i].triangles, area_normalize=True, center= True))
 
         bm = m_rem.baryc_map(v)
         bm_list.append(bm)
@@ -95,9 +97,9 @@ Here are imported:
     - the matrix (D) that performs the mapping between the low resolution mesh and the high resolution.
 """
 
-target_hr = TriMesh(r'D:\Make_Galileo_great_again\data\giorgio_\MNI.off')
+target_hr = TriMesh(r'D:\Make_Galileo_great_again\data\giorgio_\MNI.off', area_normalize=True, center= True)
 meshlist.append(target_hr)
-target_re = TriMesh(r'D:\Make_Galileo_great_again\data\giorgio_\MNI_remesh.off')
+target_re = TriMesh(r'D:\Make_Galileo_great_again\data\giorgio_\MNI_remesh.off', area_normalize=True, center= True)
 rem_list_tri.append(target_re)
 D = loadmat(r"D:\Make_Galileo_great_again\data\giorgio_\MNI_remesh.mat")["U"]
 bm_list.append(D)
@@ -114,17 +116,17 @@ for i in range(N_meshes):
 
     end = time.time()
     print("Necessary time to KNN: ", end-start, "Seconds")
-
-    #print('Chamfer Distance Knn: '+str(chamfer_distance(meshlist[0].vertices[p2p_KNN],meshlist[0].vertices)))
+    print('Chamfer Distance KNN: '+str(chamfer_distance(meshlist[SRC].vertices[p2p_KNN],meshlist[SRC].vertices)))
 
 
     ################################# ICP #####################################################
     #subsample some points to perform rigid alignment faster
     start= time.time()
 
-    subsample_list = np.zeros((N_meshes+1, 2000), dtype=int)
+    N_points = 1000
+    subsample_list = np.zeros((N_meshes+1, N_points), dtype=int)
     for i in tqdm(range(N_meshes+1)):
-        subsample_list[i] = meshlist[i].extract_fps(2000, geodesic=False, verbose=False)
+        subsample_list[i] = meshlist[i].extract_fps(N_points, geodesic=False, verbose=False)
     fps1 = subsample_list[SRC]
     fps2 = subsample_list[TRG]
 
@@ -141,8 +143,12 @@ for i in range(N_meshes):
     p2p_ICP = knn_query(meshlist[SRC].vertlist, meshlist[TRG].vertlist)
 
     end = time.time()
+    print("R Matrix:")
+    print(R)
+    print("t Matrix:")
+    print(t)
     print("Necessary time to ICP: ", end-start, "Seconds")
-    #print('Chamfer Distance ICP: '+str(chamfer_distance(meshlist[0].vertices[p2p_ICP],meshlist[0].vertices)))
+    print('Chamfer Distance ICP: '+str(chamfer_distance(meshlist[SRC].vertices[p2p_ICP],meshlist[SRC].vertices)))
 
 
     ################################# REMATCHING + FUNCTIONAL MAPS ###########################################
@@ -176,11 +182,12 @@ for i in range(N_meshes):
 
     end = time.time()
     print("Necessary time to FunMaps: ", end-start, "Seconds")
+    print('Chamfer Distance FM (Low Res): '+str(chamfer_distance(rem_list_tri[SRC].vertices[p2p],rem_list_tri[SRC].vertices)))
 
     ############################### FUNCTION TO PLOT #################################
 
     #plot_mesh(rem_list_tri[SRC],color=np.mean(rem_list_tri[SRC].vertices,axis=1))
-    #plot_mesh(rem_list_tri[TRG],color=np.mean(rem_list_tri[SRC].vertices,axis=1)[p2p])
+    plot_mesh(rem_list_tri[TRG],color=np.mean(rem_list_tri[SRC].vertices,axis=1)[p2p])
 
     ############################### ZoomOut ##########################################
 
@@ -195,14 +202,15 @@ for i in range(N_meshes):
     FM_12_hks_zo, p2p_21_hks_zo = mesh_zoomout_refine_p2p(p2p_21=p2p, mesh1=rem_list_tri[SRC], mesh2=rem_list_tri[TRG], k_init=20, nit=16, step=5, return_p2p=True, n_jobs=10, verbose=True)
     plt.imshow(FM_12_hks_zo)
 
-    plot_mesh(rem_list_tri[TRG],color=np.mean(rem_list_tri[SRC].vertices,axis=1)[p2p_21_hks_zo])
-
+    #plot_mesh(rem_list_tri[TRG],color=np.mean(rem_list_tri[SRC].vertices,axis=1)[p2p_21_hks_zo])
+    print('Chamfer Distance ZoomOut (Low Res): '+str(chamfer_distance(rem_list_tri[SRC].vertices[p2p_21_hks_zo],rem_list_tri[SRC].vertices)))
     ############################### Back To High Resolution ###########################
 
     p2p_ZO_RM = spectral.FM_to_p2p(FM_12_hks_zo, bm_list[SRC] @ rem_list_tri[SRC].eigenvectors, bm_list[TRG] @ rem_list_tri[TRG].eigenvectors, n_jobs=10)
 
 
     end = time.time()
-    print("Necessary time to ZoomOut + KNN High Res: ", end-start, "Seconds \n")
+    print("Necessary time to ZoomOut + KNN High Res: ", end-start, "Seconds")
+    print('Chamfer Distance ZoomOut (High Res): '+str(chamfer_distance(meshlist[SRC].vertices[p2p_ZO_RM],meshlist[SRC].vertices)))
 
-print("    The End,\n  Thank you for your Attention,\n      ;D ")
+print("\nWell, here at last, dear friends,\non the shores of the Chamfer \ncomes the end of our experiment in Functional Maps.\nGo in Peace!\nI will not say: \ndo not weep, for not all tears are an evil.\n")
