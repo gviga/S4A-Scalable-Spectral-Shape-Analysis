@@ -4,42 +4,51 @@
 # import libraries
 
 import numpy as np
-from pyFM.mesh import TriMesh
 import os
 import matplotlib.pyplot as plt
 
 from tqdm import tqdm as tqdm
-import pyFM.spectral as spectral
-from pyFM.FMN import FMN
-import pyFM
 import sys
 
+import pyFM
 import pyFM.spectral as spectral
 from pyFM.spectral.nn_utils import knn_query
 from pyFM.refine.zoomout import zoomout_refine
+from pyFM.mesh import TriMesh
+from pyFM.FMN import FMN
+from pyFM.functional import FunctionalMapping
 
-import trimesh
-from sklearn.neighbors import KDTree, NearestNeighbors
+import scipy
 import scipy.spatial
 from scipy.io import savemat
 from scipy.io import loadmat
+
+import trimesh
+from sklearn.neighbors import KDTree, NearestNeighbors
 from tqdm.auto import tqdm
+import networkx as nx
+import seaborn as sns
 from os.path import join
 import igl
 from PyRMT import RMTMesh
-from pyFM.functional import FunctionalMapping
+import itertools
+import copy
 import time
+
+sys.path.append(r'D:\Make_Galileo_great_again')
+from utils.Morpho import *
 
 sys.path.append(r'D:\Make_Galileo_great_again\utils')
 from visual_utils import *
 from icp_utils import * 
+
 sys.path.append(r'D:\Make_Galileo_great_again')
 from evaluation import *
 
 ############################### LOAD MESHES with RMTMesh (Rematching objects) ####################################
 SamplesDir = r"D:\Make_Galileo_great_again\data\giorgio_"
 
-N_meshes = 11
+N_meshes = 51
 
 m_list= []
 m_rem_list= []
@@ -48,20 +57,27 @@ bm_list= []
 #meshes in Trimesh
 meshlist= []
 rem_list_tri = []
+
+#Dictionary where Fun Maps are stored.
+maps_dict = {}
+
 start= time.time()
+count=0
 
 for i in range(N_meshes):
 
     PATH = os.path.join(SamplesDir, fr"0000{i:02d}_tumoredbrain.off")
-    PATH_hr = os.path.join(SamplesDir, fr"0000{i:02d}_tumoredbrain\0000{i:02d}_tumoredbrain.off")
-    PATH_bm = os.path.join(SamplesDir, fr"bm{i:02d}.mat")
+    PATH_hr = os.path.join(SamplesDir,"remeshed", fr"0000{i:02d}_tumoredbrain\0000{i:02d}_tumoredbrain.off")
+    PATH_bm = os.path.join(SamplesDir,"bm", fr"bm{i:02d}.mat")
 
     if os.path.exists(PATH):
 
+        
         rem_list_tri.append(TriMesh(PATH, area_normalize=True, center= True))
         meshlist.append(TriMesh(PATH_hr, area_normalize=True, center= True))
         D = loadmat(PATH_bm)["U"]
         bm_list.append(D)
+        count+=1
         
 
     else:
@@ -72,7 +88,7 @@ for i in range(N_meshes):
         m = RMTMesh(v, f)
         m.make_manifold()
         m_list.append(m)
-        meshlist.append(TriMesh(m_list[i].vertices, m_list[i].triangles, area_normalize=True, center= True))
+        meshlist.append(TriMesh(m_list[i-count].vertices, m_list[i-count].triangles, area_normalize=True, center= True))
 
         m_rem = m.remesh(6000)
         m_rem.clean_up()
@@ -84,6 +100,7 @@ for i in range(N_meshes):
 
         igl.write_triangle_mesh(os.path.join(SamplesDir, fr"0000{i:02d}_tumoredbrain.off"), m_rem.vertices, m_rem.triangles)
         savemat(os.path.join(SamplesDir, fr"bm{i:02d}.mat"), {"U" : bm})
+    print("mesh" , i, "loaded")
 end = time.time()
 print("Necessary time to Import Data + Remesh: ", end-start, "Seconds")
 
@@ -104,7 +121,7 @@ rem_list_tri.append(target_re)
 D = loadmat(r"D:\Make_Galileo_great_again\data\giorgio_\MNI_remesh.mat")["U"]
 bm_list.append(D)
 
-SRC=-1
+SRC=N_meshes
 
 ################################# NEAREST NEIGHBOUR #######################################
 for i in range(N_meshes):
@@ -143,10 +160,7 @@ for i in range(N_meshes):
     p2p_ICP = knn_query(meshlist[SRC].vertlist, meshlist[TRG].vertlist)
 
     end = time.time()
-    print("R Matrix:")
-    print(R)
-    print("t Matrix:")
-    print(t)
+    
     print("Necessary time to ICP: ", end-start, "Seconds")
     print('Chamfer Distance ICP: '+str(chamfer_distance(meshlist[SRC].vertices[p2p_ICP],meshlist[SRC].vertices)))
 
@@ -175,6 +189,11 @@ for i in range(N_meshes):
     model.fit(w_descr= 1e-1, w_lap= 1e-3, w_dcomm= 1,w_orient= 0, verbose=False)
     fmap12=model.FM       #C{XY}, or A_{YX}^T
 
+    maps_dict[(N_meshes,TRG)] = fmap12.copy()
+    PATH_SAVE= os.path.join(SamplesDir, fr"FM\fmap12{TRG:02d}.npy")
+    if not os.path.exists(PATH_SAVE):
+        np.save(PATH_SAVE, fmap12)
+
     #p2p=model.get_p2p(fmap12, model.mesh1.eigenvectors[:,:k],model.mesh2.eigenvectors[:,:k],adj, bijective)
     p2p=model.get_p2p()
 
@@ -187,7 +206,7 @@ for i in range(N_meshes):
     ############################### FUNCTION TO PLOT #################################
 
     #plot_mesh(rem_list_tri[SRC],color=np.mean(rem_list_tri[SRC].vertices,axis=1))
-    plot_mesh(rem_list_tri[TRG],color=np.mean(rem_list_tri[SRC].vertices,axis=1)[p2p])
+    #plot_mesh(rem_list_tri[TRG],color=np.mean(rem_list_tri[SRC].vertices,axis=1)[p2p])
 
     ############################### ZoomOut ##########################################
 
@@ -208,9 +227,21 @@ for i in range(N_meshes):
 
     p2p_ZO_RM = spectral.FM_to_p2p(FM_12_hks_zo, bm_list[SRC] @ rem_list_tri[SRC].eigenvectors, bm_list[TRG] @ rem_list_tri[TRG].eigenvectors, n_jobs=10)
 
-
     end = time.time()
     print("Necessary time to ZoomOut + KNN High Res: ", end-start, "Seconds")
     print('Chamfer Distance ZoomOut (High Res): '+str(chamfer_distance(meshlist[SRC].vertices[p2p_ZO_RM],meshlist[SRC].vertices)))
+
+network = FMN(meshlist, maps_dict=maps_dict)
+network.compute_W(M=100, verbose=True)
+network.compute_CCLB(int(.8*network.M), verbose=True)
+deviation_from_id_a = np.zeros(network.n_meshes)
+deviation_from_id_cr = np.zeros(network.n_meshes)
+for i in range(network.n_meshes):
+    CSD_a, CSD_c = network.get_CSD(i)
+    deviation_from_id_a[i] = np.linalg.norm(CSD_a - np.eye(CSD_a.shape[0]))
+    deviation_from_id_cr[i] = np.linalg.norm(np.sqrt(cclb_ev)[:,None] * (CSD_c - np.eye(CSD_c.shape[0]))) / np.sqrt(cclb_ev.sum())
+
+    
+deviation_from_id_cr.argmin(), deviation_from_id_cr.argmin()
 
 print("\nWell, here at last, dear friends,\non the shores of the Chamfer \ncomes the end of our experiment in Functional Maps.\nGo in Peace!\nI will not say: \ndo not weep, for not all tears are an evil.\n")
